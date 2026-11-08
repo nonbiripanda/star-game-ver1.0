@@ -1,0 +1,440 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>小さな星のかけら - 3エリア探索版</title>
+<style>
+  body { background-color: #111; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: sans-serif; }
+  canvas { background-color: #090d16; border: 4px solid #333; image-rendering: pixelated; width: 640px; height: 480px; }
+  p { margin-top: 12px; font-size: 14px; color: #aaa; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="320" height="240"></canvas>
+<p>操作：W A S D キーで移動・選択 / Enter または Space で決定・文字送り</p>
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+let audioCtx = null;
+function playBeep(freq, duration) {
+  if (!audioCtx) { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+  if (audioCtx.state === "suspended") { audioCtx.resume(); }
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+  gain.gain.setValueAtTime(0.04, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
+}
+
+const prologuePages = [
+  "かつて、この世界の夜空には\n数えきれないほどの星が輝いていた。",
+  "けれどある日、空から星が消え、\n世界は静かな闇に包まれた。",
+  "「いつか必ず、空に星を取り戻すよ」",
+  "幼い頃に交わした約束だけを胸に、\n君は一人、記憶の荒野を歩き続けた。",
+  "そして長い旅の果てに辿り着いたのが、\nこの『星の広場』だった……。"
+];
+
+const player = { x: 80, y: 120, size: 16, speed: 2, color: "#66ccff" };
+let currentMap = "plaza";
+let hasSeed = false;
+let hasDrop = false;
+
+const maps = {
+  plaza: {
+    bg: "#090d16",
+    name: "星の広場",
+    exits: [
+      { x: 308, y: 90, w: 12, h: 60, toMap: "forest", nextX: 20, nextY: 112 }
+    ],
+    obj: { x: 160, y: 110, size: 16, type: "flower" }
+  },
+  forest: {
+    bg: "#0a1912",
+    name: "静かな森",
+    exits: [
+      { x: 0, y: 90, w: 12, h: 60, toMap: "plaza", nextX: 284, nextY: 112 },
+      { x: 308, y: 90, w: 12, h: 60, toMap: "lake", nextX: 20, nextY: 112 }
+    ],
+    obj: { x: 160, y: 110, size: 16, type: "stone" }
+  },
+  lake: {
+    bg: "#081426",
+    name: "星屑の湖畔",
+    exits: [
+      { x: 0, y: 90, w: 12, h: 60, toMap: "forest", nextX: 284, nextY: 112 }
+    ],
+    obj: { x: 200, y: 110, size: 16, type: "water" }
+  }
+};
+
+let gameState = "prologue";
+let proIndex = 0; let proChar = 0; let fadeInAlpha = 1;
+let messages = [];
+let msgIndex = 0; let charIndex = 0; let isTalking = false; let textTimer = 0;
+let isChoosing = false; let choices = []; let choiceIndex = 0;
+let onChoiceDone = null; let onTalkEnd = null;
+let fadeAlpha = 0; let endingText = ""; let endingSubText = "";
+
+function resetGame() {
+  player.x = 80; player.y = 120;
+  currentMap = "plaza"; hasSeed = false; hasDrop = false;
+  gameState = "prologue"; proIndex = 0; proChar = 0; fadeInAlpha = 1;
+  messages = []; msgIndex = 0; charIndex = 0;
+  isTalking = false; isChoosing = false;
+  choices = []; choiceIndex = 0;
+  onChoiceDone = null; onTalkEnd = null;
+  fadeAlpha = 0; endingText = ""; endingSubText = "";
+}
+
+const keys = {};
+window.addEventListener("keydown", (e) => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+  if (isChoosing && !e.repeat) {
+    if (k === "w") {
+      choiceIndex = (choiceIndex - 1 + choices.length) % choices.length;
+      playBeep(520, 0.04);
+    }
+    if (k === "s") {
+      choiceIndex = (choiceIndex + 1) % choices.length;
+      playBeep(520, 0.04);
+    }
+  }
+  if ((e.key === "Enter" || e.key === " ") && !e.repeat) { handleAction(); }
+});
+window.addEventListener("keyup", (e) => {
+  const k = e.key.toLowerCase();
+  keys[k] = false;
+});
+
+function startTalk(msgList, choiceList, choiceCallback, endCallback) {
+  messages = msgList;
+  msgIndex = 0;
+  charIndex = 0;
+  isTalking = true;
+  isChoosing = false;
+  choices = choiceList || [];
+  choiceIndex = 0;
+  onChoiceDone = choiceCallback || null;
+  onTalkEnd = endCallback || null;
+  playBeep(660, 0.08);
+}
+function handleAction() {
+  if (gameState === "prologue") {
+    if (proChar < prologuePages[proIndex].length) {
+      proChar = prologuePages[proIndex].length;
+    } else {
+      playBeep(660, 0.08);
+      proIndex++;
+      if (proIndex >= prologuePages.length) {
+        gameState = "playing";
+        fadeInAlpha = 1;
+      } else {
+        proChar = 0;
+      }
+    }
+    return;
+  }
+
+  if (gameState === "ending") {
+    if (fadeAlpha >= 1) {
+      playBeep(660, 0.08);
+      resetGame();
+    }
+    return;
+  }
+
+  if (isChoosing) {
+    playBeep(780, 0.08);
+    const cb = onChoiceDone;
+    const selected = choiceIndex;
+    isChoosing = false;
+    isTalking = false;
+    choices = [];
+    onChoiceDone = null;
+    if (cb) cb(selected);
+    return;
+  }
+
+  if (isTalking) {
+    if (charIndex < messages[msgIndex].length) {
+      charIndex = messages[msgIndex].length;
+    } else {
+      playBeep(660, 0.08);
+      msgIndex++;
+      if (msgIndex >= messages.length) {
+        if (choices.length > 0) {
+          isChoosing = true;
+        } else {
+          const endCb = onTalkEnd;
+          isTalking = false;
+          onTalkEnd = null;
+          if (endCb) endCb();
+        }
+      } else {
+        charIndex = 0;
+      }
+    }
+  } else {
+    const obj = maps[currentMap].obj;
+    const dx = player.x - obj.x; const dy = player.y - obj.y;
+    if (Math.hypot(dx, dy) < 32) {
+      if (obj.type === "flower") {
+        if (!hasSeed) {
+          startTalk([
+            "暗闇の中で、小さな花が\n消え入りそうに揺れている……。",
+            "（東の『静かな森』や、さらにその奥に\n　失われた星の手がかりがあるはずだ）"
+          ]);
+        } else {
+          const optList = hasDrop
+            ? ["約束を果たす（種を渡す）", "種としずくを一緒に捧げる", "まだ渡さない"]
+            : ["約束を果たす（種を渡す）", "まだ渡さない"];
+          startTalk(
+            [
+              "「あ……その温かい光は、\n　ずっと探していた『星の種』……！」",
+              "「思い出してくれたんだね。\n　あの日の約束を、僕に託してくれる？」"
+            ],
+            optList,
+            (selected) => {
+              if (hasDrop && selected === 1) {
+                startTalk(
+                  [
+                    "種としずくが溶け合い、\n夜空だけでなく地上にも星の花が咲き誇る。",
+                    "「すごい……過去の記憶まで全部戻ったよ。\n　これからはずっと、一緒にいられるね。」"
+                  ],
+                  null, null,
+                  () => {
+                    gameState = "ending";
+                    endingText = "〜 Secret End：永遠の星園 〜";
+                    endingSubText = "失われた記憶と星が、すべて一つに還った。";
+                  }
+                );
+              } else if (selected === 0) {
+                startTalk(
+                  [
+                    "種を受け取った花は眩い光を放ち、\n夜空へと昇っていく。",
+                    "「ありがとう。\n　君が来てくれるって、ずっと信じてた。」",
+                    "見上げた空には、あの日と同じ\n満天の星空が広がっていた。"
+                  ],
+                  null, null,
+                  () => {
+                    gameState = "ending";
+                    endingText = "〜 True End：約束の星空 〜";
+                    endingSubText = "二人の約束は、永遠の光となった。";
+                  }
+                );
+              } else {
+                startTalk(
+                  [
+                    "君は光る種を強く握りしめた。",
+                    "花は静かに頷き、\nまた眠るように目を閉じた。"
+                  ],
+                  null, null,
+                  () => {
+                    gameState = "ending";
+                    endingText = "〜 Normal End：終わらない旅路 〜";
+                    endingSubText = "星を探す旅は、まだ続いていく。";
+                  }
+                );
+              }
+            }
+          );
+        }
+      } else if (obj.type === "stone") {
+        if (!hasSeed) {
+          startTalk([
+            "苔むした古い石碑に、こう刻まれている。\n『星の記憶は、約束を忘れない者の手に』",
+            "石碑の根元から『星の種』を見つけた！\n（さらに東へ続く道があるようだ）"
+          ]);
+          hasSeed = true;
+        } else {
+          startTalk(["古い石碑は静かに佇んでいる。\n東の奥からは穏やかな水の音が聞こえる。"]);
+        }
+      } else if (obj.type === "water") {
+        if (!hasDrop) {
+          startTalk([
+            "静まり返った湖のほとりに、\n蒼く透き通った結晶が浮かんでいる。",
+            "『記憶のしずく』を手に入れた！"
+          ]);
+          hasDrop = true;
+        } else {
+          startTalk(["鏡のような湖面が、静かに揺れている。"]);
+        }
+      }
+    }
+  }
+}
+
+function update() {
+  if (gameState === "prologue") {
+    textTimer++;
+    if (textTimer % 3 === 0 && proChar < prologuePages[proIndex].length) {
+      const ch = prologuePages[proIndex][proChar];
+      if (ch !== "\n" && ch !== " " && ch !== "　") { playBeep(440, 0.04); }
+      proChar++;
+    }
+    return;
+  }
+
+  if (gameState === "ending") {
+    if (fadeAlpha < 1) { fadeAlpha = Math.min(1, fadeAlpha + 0.008); }
+    return;
+  }
+
+  if (fadeInAlpha > 0) {
+    fadeInAlpha = Math.max(0, fadeInAlpha - 0.02);
+  }
+
+  if (!isTalking && !isChoosing) {
+    if (keys["w"]) player.y -= player.speed;
+    if (keys["s"]) player.y += player.speed;
+    if (keys["a"]) player.x -= player.speed;
+    if (keys["d"]) player.x += player.speed;
+    player.x = Math.max(0, Math.min(canvas.width - player.size, player.x));
+    player.y = Math.max(0, Math.min(canvas.height - player.size, player.y));
+
+    const exitList = maps[currentMap].exits;
+    for (let i = 0; i < exitList.length; i++) {
+      const ex = exitList[i];
+      if (player.x < ex.x + ex.w && player.x + player.size > ex.x &&
+          player.y < ex.y + ex.h && player.y + player.size > ex.y) {
+        playBeep(500, 0.06);
+        currentMap = ex.toMap;
+        player.x = ex.nextX;
+        player.y = ex.nextY;
+        break;
+      }
+    }
+  } else if (isTalking && !isChoosing) {
+    textTimer++;
+    if (textTimer % 3 === 0 && charIndex < messages[msgIndex].length) {
+      const ch = messages[msgIndex][charIndex];
+      if (ch !== "\n" && ch !== " " && ch !== "　") { playBeep(440, 0.04); }
+      charIndex++;
+    }
+  }
+}
+
+function draw() {
+  if (gameState === "prologue") {
+    ctx.fillStyle = "#05070c";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(50, 40, 2, 2); ctx.fillRect(260, 50, 2, 2); ctx.fillRect(140, 190, 2, 2);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "center";
+    const currentPro = prologuePages[proIndex].slice(0, proChar);
+    const lines = currentPro.split("\n");
+    lines.forEach((line, i) => {
+      ctx.fillText(line, canvas.width / 2, 105 + i * 24);
+    });
+
+    if (proChar >= prologuePages[proIndex].length) {
+      ctx.fillStyle = "#888";
+      ctx.font = "10px sans-serif";
+      ctx.fillText("▼ Enter / Space", canvas.width / 2, 210);
+    }
+    ctx.textAlign = "start";
+    return;
+  }
+
+  const mapData = maps[currentMap];
+  ctx.fillStyle = mapData.bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (currentMap === "lake") {
+    ctx.fillStyle = "#122b4a";
+    ctx.fillRect(180, 0, 140, 240);
+  }
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(40, 40, 2, 2); ctx.fillRect(160, 30, 2, 2); ctx.fillRect(280, 60, 2, 2);
+
+  mapData.exits.forEach((ex) => {
+    ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+    ctx.fillRect(ex.x, ex.y, ex.w, ex.h);
+  });
+
+  const obj = mapData.obj;
+  if (obj.type === "flower") {
+    ctx.fillStyle = "#33aa55"; ctx.fillRect(obj.x + 6, obj.y + 8, 4, 8);
+    ctx.fillStyle = hasSeed ? "#ffffff" : "#ffd700"; ctx.fillRect(obj.x + 4, obj.y + 2, 8, 8);
+  } else if (obj.type === "stone") {
+    ctx.fillStyle = "#778899"; ctx.fillRect(obj.x + 2, obj.y + 2, 12, 14);
+    if (!hasSeed) { ctx.fillStyle = "#ffff88"; ctx.fillRect(obj.x + 6, obj.y + 12, 4, 4); }
+  } else if (obj.type === "water") {
+    ctx.fillStyle = hasDrop ? "#335577" : "#44eeff";
+    ctx.fillRect(obj.x + 4, obj.y + 4, 8, 8);
+  }
+
+  ctx.fillStyle = player.color; ctx.fillRect(player.x, player.y, player.size, player.size);
+  ctx.fillStyle = "#000"; ctx.fillRect(player.x + 4, player.y + 4, 2, 4); ctx.fillRect(player.x + 10, player.y + 4, 2, 4);
+
+  let itemText = "";
+  if (hasSeed && hasDrop) itemText = " ｜ 持ち物：星の種・記憶のしずく";
+  else if (hasSeed) itemText = " ｜ 持ち物：星の種";
+  else if (hasDrop) itemText = " ｜ 持ち物：記憶のしずく";
+
+  ctx.fillStyle = "#aaa";
+  ctx.font = "10px sans-serif";
+  ctx.fillText("場所：" + mapData.name + itemText, 10, 16);
+
+  if (isTalking && messages[msgIndex]) {
+    ctx.fillStyle = "rgba(0, 0, 0, 0.85)"; ctx.fillRect(12, 156, 296, 72);
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.strokeRect(13, 157, 294, 70);
+    ctx.fillStyle = "#ffffff"; ctx.font = "13px sans-serif";
+    const currentText = messages[msgIndex].slice(0, charIndex);
+    const lines = currentText.split("\n");
+    lines.forEach((line, i) => { ctx.fillText(line, 24, 182 + i * 22); });
+  }
+
+  if (isChoosing) {
+    const boxH = choices.length * 22 + 12;
+    const boxY = 148 - boxH;
+    ctx.fillStyle = "rgba(0, 0, 0, 0.9)"; ctx.fillRect(90, boxY, 218, boxH);
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.strokeRect(91, boxY + 1, 216, boxH - 2);
+    ctx.font = "13px sans-serif";
+    choices.forEach((c, i) => {
+      ctx.fillStyle = i === choiceIndex ? "#ffd700" : "#ffffff";
+      ctx.fillText((i === choiceIndex ? "▶ " : "　 ") + c, 102, boxY + 22 + i * 22);
+    });
+  }
+
+  if (fadeInAlpha > 0) {
+    ctx.fillStyle = "rgba(0, 0, 0, " + fadeInAlpha + ")";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  if (gameState === "ending") {
+    ctx.fillStyle = "rgba(0, 0, 0, " + fadeAlpha + ")";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (fadeAlpha >= 0.9) {
+      ctx.fillStyle = "rgba(255, 255, 255, " + ((fadeAlpha - 0.9) * 10) + ")";
+      ctx.font = "15px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(endingText, canvas.width / 2, canvas.height / 2 - 18);
+      ctx.font = "11px sans-serif";
+      ctx.fillStyle = "rgba(200, 220, 255, " + ((fadeAlpha - 0.9) * 10) + ")";
+      ctx.fillText(endingSubText, canvas.width / 2, canvas.height / 2 + 6);
+      ctx.fillStyle = "rgba(170, 170, 170, " + ((fadeAlpha - 0.9) * 10) + ")";
+      ctx.fillText("Enter / Space で最初に戻る", canvas.width / 2, canvas.height / 2 + 34);
+      ctx.textAlign = "start";
+    }
+  }
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>
